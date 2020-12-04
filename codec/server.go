@@ -34,6 +34,7 @@ func NewServer() *Server {
 
 var DefaultServer = NewServer()
 
+// 阻塞等待socket 链接 建立，起go routine 去serve
 func (s *Server) Accept(lis net.Listener) {
 	for {
 		conn, err := lis.Accept()
@@ -46,8 +47,9 @@ func (s *Server) Accept(lis net.Listener) {
 }
 
 func (s *Server) ServeConn(conn io.ReadWriteCloser) {
-	defer func() { _ = conn.Close() }()
+	defer func() { _ = conn.Close() }() // 处理完毕关闭链接
 	var opt Option
+	// 根据约定的json格式读option，从中拿到具体内容的解析规则
 	if err := json.NewDecoder(conn).Decode(&opt); err != nil {
 		log.Println("rpc server: options error: ", err)
 		return
@@ -58,12 +60,14 @@ func (s *Server) ServeConn(conn io.ReadWriteCloser) {
 		return
 	}
 
+	// 拿到具体的编解码器(gob)的构造函数，可以有多种配置
 	f := NewCodecFuncMap[opt.CodecType]
 	if f == nil {
 		log.Printf("rpc server: invalid codec type %s", opt.CodecType)
 		return
 	}
 
+	// 构造codec 进行处理
 	s.serveCodec(f(conn))
 }
 
@@ -74,6 +78,7 @@ type request struct {
 	argv, replyv reflect.Value
 }
 
+// 根据codec 进入处理流程，主要包括三个阶段 readRequest handleRequest, sendResponse
 func (s *Server) serveCodec(cc Codec) {
 	sending := new(sync.Mutex)
 	wg := new(sync.WaitGroup)
@@ -88,6 +93,8 @@ func (s *Server) serveCodec(cc Codec) {
 			s.sendResponse(cc, req.h, invalidRequest, sending)
 			continue
 		}
+
+		// 一个链接可以处理多个请求
 		wg.Add(1)
 		go s.handleRequest(cc, req, sending, wg)
 	}
@@ -95,6 +102,7 @@ func (s *Server) serveCodec(cc Codec) {
 	_ = cc.Close()
 }
 
+// decode requestHeader: service method seq
 func (s *Server) readRequestHeader(cc Codec) (*Header, error) {
 	var h Header
 	if err := cc.ReadHeader(&h); err != nil {
@@ -106,14 +114,15 @@ func (s *Server) readRequestHeader(cc Codec) (*Header, error) {
 	return &h, nil
 }
 
+// readRequest: 解析header 和 body，组装 request
 func (s *Server) readRequest(cc Codec) (*request, error) {
-	h, err := s.readRequestHeader(cc)
+	h, err := s.readRequestHeader(cc) // 解析header
 	if err != nil {
 		return nil, err
 	}
 
 	req := &request{h: h}
-
+	// todo: 目前只支持string
 	req.argv = reflect.New(reflect.TypeOf(""))
 	if err = cc.ReadBody(req.argv.Interface()); err != nil {
 		log.Println("rpc server: read argv err:", err)
@@ -121,6 +130,7 @@ func (s *Server) readRequest(cc Codec) (*request, error) {
 	return req, nil
 }
 
+// sendResponse 加锁避免sending时 乱序，导致客户端无法解析
 func (s *Server) sendResponse(cc Codec, header *Header, body interface{}, sending *sync.Mutex) {
 	sending.Lock()
 	defer sending.Unlock()
@@ -131,8 +141,9 @@ func (s *Server) sendResponse(cc Codec, header *Header, body interface{}, sendin
 }
 
 func (s *Server) handleRequest(cc Codec, req *request, sending *sync.Mutex, wg *sync.WaitGroup) {
+	// todo: 这里应该去调用rpc method
 	defer wg.Done()
-	log.Println(req.h, req.argv.Elem())
+	log.Println("server handle request:", req.h, req.argv.Elem())
 	req.replyv = reflect.ValueOf(fmt.Sprintf("rps resp %d", req.h.Seq))
 	s.sendResponse(cc, req.h, req.replyv.Interface(), sending)
 }

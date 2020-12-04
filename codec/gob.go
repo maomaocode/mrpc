@@ -31,11 +31,11 @@ func (g *GobCodec) Close() error {
 }
 
 func (g *GobCodec) ReadHeader(header *Header) error {
-	return g.dec.Decode(header)
+	return g.dec.Decode(header) // 从 conn 中读取header
 }
 
 func (g *GobCodec) ReadBody(body interface{}) error {
-	return g.dec.Decode(body)
+	return g.dec.Decode(body) // 从 conn 中读body
 }
 
 func (g *GobCodec) Write(header *Header, body interface{}) (err error) {
@@ -46,6 +46,7 @@ func (g *GobCodec) Write(header *Header, body interface{}) (err error) {
 		}
 	}()
 
+	// 往buf 中 写入header
 	if err := g.enc.Encode(header); err != nil {
 		log.Println("rpc codec: gob error encoding header:", err)
 		return err
