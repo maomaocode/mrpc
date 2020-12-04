@@ -1,8 +1,9 @@
-package codec
+package server
 
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/mrpc/codec"
 	"io"
 	"log"
 	"net"
@@ -10,21 +11,7 @@ import (
 	"sync"
 )
 
-func Accept(lis net.Listener) {
-	DefaultServer.Accept(lis)
-}
-
-const MagicNumber = 0x3bef5c
-
-type Option struct {
-	MagicNumber int //
-	CodecType   Type
-}
-
-var DefaultOption = &Option{
-	MagicNumber: MagicNumber,
-	CodecType:   GobType,
-}
+var DefaultServer = NewServer()
 
 type Server struct{}
 
@@ -32,7 +19,10 @@ func NewServer() *Server {
 	return &Server{}
 }
 
-var DefaultServer = NewServer()
+func Accept(lis net.Listener) {
+	DefaultServer.Accept(lis)
+}
+
 
 // 阻塞等待socket 链接 建立，起go routine 去serve
 func (s *Server) Accept(lis net.Listener) {
@@ -61,7 +51,7 @@ func (s *Server) ServeConn(conn io.ReadWriteCloser) {
 	}
 
 	// 拿到具体的编解码器(gob)的构造函数，可以有多种配置
-	f := NewCodecFuncMap[opt.CodecType]
+	f := codec.NewCodecFuncMap[opt.CodecType]
 	if f == nil {
 		log.Printf("rpc server: invalid codec type %s", opt.CodecType)
 		return
@@ -74,12 +64,12 @@ func (s *Server) ServeConn(conn io.ReadWriteCloser) {
 var invalidRequest = struct{}{}
 
 type request struct {
-	h            *Header
+	h            *codec.Header
 	argv, replyv reflect.Value
 }
 
 // 根据codec 进入处理流程，主要包括三个阶段 readRequest handleRequest, sendResponse
-func (s *Server) serveCodec(cc Codec) {
+func (s *Server) serveCodec(cc codec.Codec) {
 	sending := new(sync.Mutex)
 	wg := new(sync.WaitGroup)
 
@@ -103,8 +93,8 @@ func (s *Server) serveCodec(cc Codec) {
 }
 
 // decode requestHeader: service method seq
-func (s *Server) readRequestHeader(cc Codec) (*Header, error) {
-	var h Header
+func (s *Server) readRequestHeader(cc codec.Codec) (*codec.Header, error) {
+	var h codec.Header
 	if err := cc.ReadHeader(&h); err != nil {
 		if err != io.EOF && err != io.ErrUnexpectedEOF {
 			log.Println("rpc server: read header error:", err)
@@ -115,7 +105,7 @@ func (s *Server) readRequestHeader(cc Codec) (*Header, error) {
 }
 
 // readRequest: 解析header 和 body，组装 request
-func (s *Server) readRequest(cc Codec) (*request, error) {
+func (s *Server) readRequest(cc codec.Codec) (*request, error) {
 	h, err := s.readRequestHeader(cc) // 解析header
 	if err != nil {
 		return nil, err
@@ -131,7 +121,7 @@ func (s *Server) readRequest(cc Codec) (*request, error) {
 }
 
 // sendResponse 加锁避免sending时 乱序，导致客户端无法解析
-func (s *Server) sendResponse(cc Codec, header *Header, body interface{}, sending *sync.Mutex) {
+func (s *Server) sendResponse(cc codec.Codec, header *codec.Header, body interface{}, sending *sync.Mutex) {
 	sending.Lock()
 	defer sending.Unlock()
 
@@ -140,7 +130,7 @@ func (s *Server) sendResponse(cc Codec, header *Header, body interface{}, sendin
 	}
 }
 
-func (s *Server) handleRequest(cc Codec, req *request, sending *sync.Mutex, wg *sync.WaitGroup) {
+func (s *Server) handleRequest(cc codec.Codec, req *request, sending *sync.Mutex, wg *sync.WaitGroup) {
 	// todo: 这里应该去调用rpc method
 	defer wg.Done()
 	log.Println("server handle request:", req.h, req.argv.Elem())

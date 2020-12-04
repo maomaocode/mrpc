@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/mrpc/server"
 	"log"
 	"net"
 	"time"
@@ -16,7 +17,7 @@ func startServer(addr chan string) {
 	}
 	log.Println("start rpc server on", l.Addr())
 	addr <- l.Addr().String()
-	codec.Accept(l)
+	server.Accept(l)
 }
 
 func main() {
@@ -28,7 +29,7 @@ func main() {
 
 	time.Sleep(time.Second)
 
-	_ = json.NewEncoder(conn).Encode(codec.DefaultOption)
+	_ = json.NewEncoder(conn).Encode(server.DefaultOption)
 	cc := codec.NewGobCodec(conn)
 
 	for i := 0; i < 10; i++ {
