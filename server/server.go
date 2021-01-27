@@ -2,18 +2,22 @@ package server
 
 import (
 	"encoding/json"
-	"fmt"
+	"errors"
 	"github.com/mrpc/codec"
+	"github.com/mrpc/service"
 	"io"
 	"log"
 	"net"
 	"reflect"
+	"strings"
 	"sync"
 )
 
 var DefaultServer = NewServer()
 
-type Server struct{}
+type Server struct {
+	serviceMap sync.Map
+}
 
 func NewServer() *Server {
 	return &Server{}
@@ -22,7 +26,6 @@ func NewServer() *Server {
 func Accept(lis net.Listener) {
 	DefaultServer.Accept(lis)
 }
-
 
 // 阻塞等待socket 链接 建立，起go routine 去serve
 func (s *Server) Accept(lis net.Listener) {
@@ -66,6 +69,8 @@ var invalidRequest = struct{}{}
 type request struct {
 	h            *codec.Header
 	argv, replyv reflect.Value
+	mtype        *service.MethodType
+	svc          *service.Service
 }
 
 // 根据codec 进入处理流程，主要包括三个阶段 readRequest handleRequest, sendResponse
@@ -112,10 +117,22 @@ func (s *Server) readRequest(cc codec.Codec) (*request, error) {
 	}
 
 	req := &request{h: h}
-	// todo: 目前只支持string
-	req.argv = reflect.New(reflect.TypeOf(""))
-	if err = cc.ReadBody(req.argv.Interface()); err != nil {
-		log.Println("rpc server: read argv err:", err)
+
+	req.svc, req.mtype, err = s.findService(h.ServiceMethod)
+	if err != nil {
+		return req, err
+	}
+	req.argv = req.mtype.NewArgv()
+	req.replyv = req.mtype.NewReplyv()
+
+	// make sure that argvi is a pointer, ReadBody need a pointer as parameter
+	argvi := req.argv.Interface()
+	if req.argv.Type().Kind() != reflect.Ptr {
+		argvi = req.argv.Addr().Interface()
+	}
+	if err = cc.ReadBody(argvi); err != nil {
+		log.Println("rpc server: read body err:", err)
+		return req, err
 	}
 	return req, nil
 }
@@ -131,9 +148,43 @@ func (s *Server) sendResponse(cc codec.Codec, header *codec.Header, body interfa
 }
 
 func (s *Server) handleRequest(cc codec.Codec, req *request, sending *sync.Mutex, wg *sync.WaitGroup) {
-	// todo: 这里应该去调用rpc method
 	defer wg.Done()
-	log.Println("server handle request:", req.h, req.argv.Elem())
-	req.replyv = reflect.ValueOf(fmt.Sprintf("rps resp %d", req.h.Seq))
+	err := req.svc.Call(req.mtype, req.argv, req.replyv)
+	if err != nil {
+		req.h.Error = err.Error()
+		s.sendResponse(cc, req.h, invalidRequest, sending)
+		return
+	}
+
 	s.sendResponse(cc, req.h, req.replyv.Interface(), sending)
+}
+
+func (s *Server) Register(rcvr interface{}) error {
+	svce := service.NewService(rcvr)
+	if _, dup := s.serviceMap.LoadOrStore(svce.Name, svce); dup {
+		return errors.New("rpc: service already defined: " + svce.Name)
+	}
+	return nil
+}
+
+func Register(rcvr interface{}) error { return DefaultServer.Register(rcvr) }
+
+func (s *Server) findService(serviceMethod string) (svc *service.Service, mtype *service.MethodType, err error) {
+	dot := strings.LastIndex(serviceMethod, ".")
+	if dot < 0 {
+		err = errors.New("rpc s: service/method request ill-formed: " + serviceMethod)
+		return
+	}
+	serviceName, methodName := serviceMethod[:dot], serviceMethod[dot+1:]
+	svci, ok := s.serviceMap.Load(serviceName)
+	if !ok {
+		err = errors.New("rpc s: can't find service " + serviceName)
+		return
+	}
+	svc = svci.(*service.Service)
+	mtype = svc.Method[methodName]
+	if mtype == nil {
+		err = errors.New("rpc s: can't find method " + methodName)
+	}
+	return
 }
